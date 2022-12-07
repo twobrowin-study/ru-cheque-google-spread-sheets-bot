@@ -1,0 +1,4 @@
+pandas
+python-telegram-bot>=20.0a0
+gspread
+gspread-dataframe
