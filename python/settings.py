@@ -10,3 +10,5 @@ SheetsAccJson = environ.get('SHEETS_ACC_JSON')
 if SheetsAccJson == '' or SheetsAccJson == None:
     with open('./serviceacc.json', 'r') as fp:
         SheetsAccJson = json.load(fp)
+else:
+    SheetsAccJson = json.loads(SheetsAccJson)

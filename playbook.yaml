@@ -7,7 +7,7 @@
     - name: Run bot docker container
       docker_container:
         name: ru-cheque-google-spread-sheets-bot
-        image: twobrowin/ru-cheque-google-spread-sheets-bot:1.0
+        image: twobrowin/ru-cheque-google-spread-sheets-bot:1.0.1
         state: started
         detach: yes
         restart: yes
