@@ -6,7 +6,7 @@
   tasks:
     - name: Run bot docker container
       docker_container:
-        name: metro-2022-bot
+        name: ru-cheque-google-spread-sheets-bot
         image: twobrowin/ru-cheque-google-spread-sheets-bot:1.0
         state: started
         detach: yes
@@ -14,6 +14,5 @@
         recreate: yes
         env:
           TZ: "Europe/Moscow"
-          
           BOT_TOKEN: "{{ bot_token }}"
           SHEETS_ACC_JSON: "{{ sheet_acc_json | string }}"
