@@ -14,8 +14,6 @@ import json
 from settings import SheetsAccJson
 from log import Log
 
-Gspread = gspread.service_account_from_dict(SheetsAccJson)
-
 State = pd.DataFrame(data=[], columns=['id', 'state', 'document'])
 STATE_LINK_AWAIT = 'link_await'
 
@@ -124,6 +122,7 @@ async def LinkHandler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         for entity in update.message.entities:
             if entity.type == MessageEntityType.URL:
+                Gspread = gspread.service_account_from_dict(SheetsAccJson)
                 sheet = Gspread.open_by_url(update.message.parse_entity(entity))
                 break
     except Exception:
