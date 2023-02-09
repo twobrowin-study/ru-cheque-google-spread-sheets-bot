@@ -11,7 +11,7 @@
     - name: Run bot docker service
       docker_swarm_service:
         name: ru-cheque-google-spread-sheets-bot
-        image: twobrowin/ru-cheque-google-spread-sheets-bot:2.0.0
+        image: twobrowin/ru-cheque-google-spread-sheets-bot:2.0.1
         env:
           TZ: "Europe/Moscow"
           BOT_TOKEN: "{{ bot_token }}"

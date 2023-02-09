@@ -4,3 +4,4 @@ gspread
 gspread-dataframe
 gspread-formatting
 pyzbar
+Pillow
