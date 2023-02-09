@@ -1,167 +1,332 @@
-from telegram import Update, Message
-from telegram import Document, File
+from telegram import Update, Message, File
 from telegram.ext import ContextTypes
 from telegram.ext.filters import MessageFilter
-from telegram.constants import MessageEntityType
+from telegram.constants import MessageEntityType, ParseMode
+
+import asyncio
 
 import traceback
+import pandas as pd
+
+import io
+from pyzbar.pyzbar import decode
+from PIL import Image
+
+from datetime import datetime
 import gspread
 from gspread_dataframe import set_with_dataframe
-import pandas as pd
-from datetime import datetime
-import json
+from gspread_formatting import *
 
-from settings import SheetsAccJson
+from nalog import NalogRuPython
+
+from settings import SheetsAccJson, SleepSec
 from log import Log
 
-State = pd.DataFrame(data=[], columns=['id', 'state', 'document'])
-STATE_LINK_AWAIT = 'link_await'
+from text import (
+    TitleBase,
+    TextCancel,
 
-TitleBase = "Чек от {date}"
+    TextMissStateEmpty,
+    TextMissStateLink,
+    TextMissStatePhoto,
 
-TextCancel = """
-Все операции отменены - теперь снова жду от тебя json файл из приложения *Проверка чека*
-"""
+    TextSendLinkPhoto,
+    TextSendLink,
+    TextSendPhoto,
+    TextSendPhone,
+    TextSendCode,
 
-TextSendLink = """
-Супер! Теперь вышли мне ссылку на таблицу Google
+    TextGettingCheques,
+    TextConvertingToSpreadsheet,
+    TextDone,
 
-_Ссылка должна быть с правами на редактирование!_
-"""
+    TextStartProcessing,
 
-TextDone = """
-Готово! Я добавил лист `{title}` в таблицу
-"""
+    TextProceedNoState,
+    TextQrCodeError,
 
-TextBasicError = """
-Произошла какая-то ошибка, попробуй ещё раз
+    TextCodeError,
+    TextTicketError,
+    TextSheetError,
+    TextWorksheetError,
+    TextContentError
+)
 
-Снова жду от тебя json файл из приложения *Проверка чека*
-"""
+State = pd.DataFrame(data=[], columns=['id', 'link', 'files', 'tasked', 'qr_codes', 'has_to_print_phone', 'nalog'])
 
-TextFileError = """
-С файлом что-то не так, мне нужен json файл из приложения *Проверка чека*
-"""
-
-TextLinkError = """
-Со ссылкой какая-то проблема, мне нужна ссылка на Google таблицу
-"""
-
-TextSheetError = """
-Произошла ошибка при подключении к таблице, пошли ссылку ещё раз
-
-_Ссылка должна быть с правами на редактирование!_
-"""
-
-TextWorksheetError = """
-Произошла ошибка при создании листа `{title}`, пошли ссылку ещё раз
-
-_Ссылка должна быть с правами на редактирование!_
-"""
-
-ParceError = """
-Произошла ошибка при парсинге файла
-
-*Я сбросил все операции и жду от тебя json файл*
-"""
-
-class StateAwaitFileClass(MessageFilter):
+class UserHasToPrintPhoneClass(MessageFilter):
     def filter(self, message: Message) -> bool:
-        return State[State.id == message.chat_id].empty
-StateAwaitFileFilter = StateAwaitFileClass()
+        global State
+        return not State.loc[
+            (State.id == message.chat_id) &
+            (
+                (
+                    (State.qr_codes.str.len() > 0) &
+                    (State.nalog.isnull())
+                ) |
+                (State.has_to_print_phone == True)
+            ) 
+        ].empty
 
-class StateAwaitLinkClass(MessageFilter):
+class UserHasToPrintCodeClass(MessageFilter):
     def filter(self, message: Message) -> bool:
-        return not State[(State.id == message.chat_id) & (State.state == STATE_LINK_AWAIT)].empty
-StateAwaitLinkFilter = StateAwaitLinkClass()
+        global State
+        return not State.loc[
+            (State.id == message.chat_id) &
+            (State.nalog.notnull())
+        ].empty
 
-class MessageHasJsonFileClass(MessageFilter):
-    def filter(self, message: Message) -> bool:
-        document: Document = message.document
-        if document == None:
-            return False
-        return document.file_name.split('.')[-1] == 'json'
-MessageHasJsonFileFilter = MessageHasJsonFileClass()
-
-class MessageHasLinkClass(MessageFilter):
-    def filter(self, message: Message) -> bool:
-        for entity in message.entities:
-            return entity.type == MessageEntityType.URL
-        return False
-MessageHasLinkFilter = MessageHasLinkClass()
+UserHasToPrintPhoneFilter = UserHasToPrintPhoneClass()
+UserHasToPrintCodeFilter  = UserHasToPrintCodeClass()
 
 async def CancelHandler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    Log.info(f"Got cancel command from {update.effective_user.id} aka {update.effective_user.name} " +\
-        f"in {update.effective_chat.id} aka {update.effective_chat.title}")
+    Log.infor(
+        f"Got cancel command from {update.effective_user.id} aka {update.effective_user.name}",
+        f"in {update.effective_chat.id} aka {update.effective_chat.title}"
+    )
     global State
     State = State.drop(State[State.id == update.effective_chat.id].index)
     await update.message.reply_markdown(TextCancel)
 
-async def JsonFileHandler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    Log.info(f"Got json file from {update.effective_user.id} aka {update.effective_user.name} " +\
-        f"in {update.effective_chat.id} aka {update.effective_chat.title}")
+async def MissHandler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global State
-    State = pd.concat([
-        State,
-        pd.DataFrame([{
-            'id': update.effective_chat.id,
-            'state': STATE_LINK_AWAIT,
-            'document': update.message.document
-        }])
-    ], ignore_index=True)
-    await update.message.reply_markdown(TextSendLink)
+    chat_id = update.effective_chat.id
+    Log.infor(
+        f"Got missing message from {update.effective_user.id} aka {update.effective_user.name}",
+        f"in {chat_id} aka {update.effective_chat.title}"
+    )
 
-async def NotJsonFileHandler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    Log.info(f"Got not json file from {update.effective_user.id} aka {update.effective_user.name} " +\
-        f"in {update.effective_chat.id} aka {update.effective_chat.title}")
-    await update.message.reply_markdown(TextFileError)
-
-async def LinkHandler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    Log.info(f"Got link from {update.effective_user.id} aka {update.effective_user.name} " +\
-        f"in {update.effective_chat.id} aka {update.effective_chat.title}")
-    try:
-        for entity in update.message.entities:
-            if entity.type == MessageEntityType.URL:
-                Gspread = gspread.service_account_from_dict(SheetsAccJson)
-                sheet = Gspread.open_by_url(update.message.parse_entity(entity))
-                break
-    except Exception:
-        Log.info(f"Got an exeption while parsing url from {update.effective_user.id} aka {update.effective_user.name} " +\
-            f"in {update.effective_chat.id} aka {update.effective_chat.title}")
-        Log.exception(traceback.format_exc())
-        await update.message.reply_markdown(TextSheetError)
+    if not State.loc[(State.id == chat_id) & (State.files.str.len() == 0) & (State.link != "")].empty:
+        await update.message.reply_markdown(TextMissStatePhoto)
         return
 
-    try:
-        title = TitleBase.format(date = datetime.now().strftime("%d.%m.%Y %H:%M"))
-        worksheet = sheet.add_worksheet(title=title, rows=100, cols=20)
-    except Exception:
-        Log.info(f"Got an exeption while creating worksheet from {update.effective_user.id} aka {update.effective_user.name} " +\
-            f"in {update.effective_chat.id} aka {update.effective_chat.title}")
-        Log.exception(traceback.format_exc())
-        await update.message.reply_markdown(TextWorksheetError.format(title = title))
+    if not State.loc[(State.id == chat_id) & (State.files.str.len() > 0) & (State.link == "")].empty:
+        await update.message.reply_markdown(TextMissStateLink)
         return
     
+    await update.message.reply_markdown(TextMissStateEmpty)
+
+async def FlowHandler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global State
+    chat_id = update.effective_chat.id
+    Log.infor(
+        f"Got flow message from",
+        f"{update.effective_user.id} aka {update.effective_user.name}",
+        f"in {chat_id} aka {update.effective_chat.title}"
+    )
+
+    if State.loc[State.id == chat_id].empty:
+        State = pd.concat([
+            State,
+            pd.DataFrame([{
+                'id':       chat_id,
+                'link':     "",
+                'files':    [],
+                'tasked':   False,
+                'qr_codes': [],
+                'has_to_print_phone': False,
+                'nalog':    None,
+            }])
+        ], ignore_index=True)
+
+    for entity in update.message.entities:
+        if entity.type == MessageEntityType.URL:
+            State.loc[State.id == chat_id, 'link'] = update.message.parse_entity(entity)
+            break
+    for entity in update.message.caption_entities:
+        if entity.type == MessageEntityType.URL:
+            State.loc[State.id == chat_id, 'link'] = update.message.parse_caption_entity(entity)
+            break
+    
+    if (
+        len(update.message.photo) > 0 or update.message.document != None
+    ) and State.loc[State.id == chat_id].iloc[0].tasked == False:
+        await update.message.reply_markdown(TextStartProcessing)
+
+    file = None
+    if len(update.message.photo) > 0:
+        file  = await update.message.photo[-1].get_file()
+    if update.message.document != None:
+        file  = await update.message.document.get_file()
+    
+    if file != None:
+        files = State.loc[State.id == chat_id].iloc[0].files
+        if file.file_unique_id not in [file.file_unique_id for file in files]:
+            State.loc[State.id == chat_id, 'files'] = [files + [file]]
+
+    if not State.loc[(State.id == chat_id) & (State.files.str.len() > 0) & (State.link == "")].empty:
+        await update.message.reply_markdown(TextSendLink)
+        return
+
+    if not State.loc[(State.id == chat_id) & (State.files.str.len() == 0) & (State.link != "")].empty:
+        await update.message.reply_markdown(TextSendPhoto)
+        return
+    
+    if State.loc[State.id == chat_id].iloc[0].tasked == False:
+        State.loc[State.id == chat_id, 'tasked'] = True
+        context.application.create_task(await_proceed(update, context))
+
+async def await_proceed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    Log.infor(
+        f"Awaiting before processing qr codes task for",
+        f"{update.effective_user.id} aka {update.effective_user.name}",
+        f"in {chat_id} aka {update.effective_chat.title}",
+    )    
+    await asyncio.sleep(SleepSec)
+    await ProceedHandler(update, context)
+
+async def ProceedHandler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global State
+    chat_id = update.effective_chat.id
+
+    if State[State.id == chat_id].empty:
+        await update.message.reply_markdown(TextProceedNoState)
+        return
+
+    Log.infor(
+        f"Start processing qr codes task for",
+        f"{update.effective_user.id} aka {update.effective_user.name}",
+        f"in {chat_id} aka {update.effective_chat.title}",
+    )
+
+    qr_codes = []
+    for file in State.loc[State.id == chat_id].iloc[0].files:
+        file: File
+        try:
+            in_memory = io.BytesIO()
+            await file.download_to_memory(in_memory)
+            in_memory.seek(0)
+
+            qr_decoded = decode(Image.open(in_memory))
+            qr_code: str = qr_decoded[0].data.decode("utf-8")
+            qr_codes += [qr_code]
+        except Exception:
+            Log.infor(
+                f"Got an error while processing qr code in",
+                f"{update.effective_user.id} aka {update.effective_user.name}",
+                f"in {chat_id} aka {update.effective_chat.title}",
+            )
+            
+            files = State.loc[State.id == chat_id].iloc[0].files
+            files.remove(file)
+            State.loc[State.id == chat_id, 'files'] = [files]
+            State.loc[State.id == chat_id, 'tasked'] = False
+
+            await update.message.reply_photo(file.file_id, caption=TextQrCodeError, parse_mode=ParseMode.MARKDOWN)
+            Log.debug(traceback.format_exc())
+            return
+        
+    State.loc[State.id == chat_id, 'qr_codes'] = [qr_codes]
+    
+    if State.loc[State.id == chat_id].iloc[0].nalog != None:
+        return await qr_to_spreadsheet(update, context)
+
+    await update.message.reply_markdown(TextSendPhone)
+    Log.infor(
+        f"Done processing qr codes task and asked for phone for",
+        f"{update.effective_user.id} aka {update.effective_user.name}",
+        f"in {chat_id} aka {update.effective_chat.title}",
+    )
+
+async def SetPhoneCommandHandler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global State
+    chat_id = update.effective_chat.id
+    if State.loc[State.id == chat_id].empty:
+        State = pd.concat([
+            State,
+            pd.DataFrame([{
+                'id':       chat_id,
+                'link':     "",
+                'files':    [],
+                'tasked':   False,
+                'qr_codes': [],
+                'has_to_print_phone': True,
+                'nalog':    None,
+            }])
+        ], ignore_index=True)
+    else:
+        State.loc[State.id == chat_id, 'has_to_print_phone'] = True
+    Log.infor(
+        f"Seted that user has to print phone for",
+        f"{update.effective_user.id} aka {update.effective_user.name}",
+        f"in {chat_id} aka {update.effective_chat.title}",
+    )
+    await update.message.reply_markdown(TextSendPhone)
+
+async def PhoneHandler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global State
+    chat_id = update.effective_chat.id
+    phone = update.message.text
+    if phone in ["", None]:
+        phone = update.message.caption
+    State.loc[State.id == chat_id, 'nalog'] = NalogRuPython(phone, line_login=False)
+    State.loc[State.id == chat_id, 'has_to_print_phone'] = False
+    Log.infor(
+        f"Created Nalog instance for",
+        f"{update.effective_user.id} aka {update.effective_user.name}",
+        f"in {chat_id} aka {update.effective_chat.title}",
+    )
+    await update.message.reply_markdown(TextSendCode)
+
+async def CodeHandler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global State
+    chat_id = update.effective_chat.id
+    code = update.message.text
+    if code in ["", None]:
+        code = update.message.caption
+    nalog: NalogRuPython = State.loc[State.id == chat_id].iloc[0].nalog
 
     try:
-        document: Document = State[State.id == update.effective_chat.id].iloc[0].document
-        file: File = await document.get_file()
-        content = await file.download_as_bytearray()
-        tickets = json.loads(content.decode("utf-8"))
+        nalog.set_session_id(code)
+    except Exception:
+        Log.infor(
+            f"Got an error while setting session id at Nalog instance for",
+            f"{update.effective_user.id} aka {update.effective_user.name}",
+            f"in {chat_id} aka {update.effective_chat.title}",
+        )
+        await update.message.reply_markdown(TextCodeError)
+        Log.debug(traceback.format_exc())
+        return
 
-        if type(tickets) != list:
-            tickets = [tickets]
+    Log.infor(
+        f"Set session id for Nalog instance for",
+        f"{update.effective_user.id} aka {update.effective_user.name}",
+        f"in {chat_id} aka {update.effective_chat.title}",
+    )
+    
+    if len(State.loc[State.id == chat_id].iloc[0].qr_codes) == 0:
+        await update.message.reply_markdown(TextSendLinkPhoto)
+        return
+    
+    await qr_to_spreadsheet(update, context)
+
+async def qr_to_spreadsheet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global State
+    chat_id = update.effective_chat.id
+    nalog: NalogRuPython = State.loc[State.id == chat_id].iloc[0].nalog
+
+    Log.infor(
+        f"Starting processing qr data to shpreadsheet for",
+        f"{update.effective_user.id} aka {update.effective_user.name}",
+        f"in {chat_id} aka {update.effective_chat.title}",
+    )
+    await update.message.reply_markdown(TextGettingCheques)
+
+    files    = State.loc[State.id == chat_id].iloc[0].files
+    qr_codes = State.loc[State.id == chat_id].iloc[0].qr_codes
+
+    fullSum = 0
+    fullNds = 0
+    df_tickets = pd.DataFrame()
+    df_items = pd.DataFrame()
+    for file,qr_code in zip(files, qr_codes):
+        try:
+            ticket = nalog.get_ticket(qr_code)
         
-        fullSum = 0
-        fullNds = 0
-        df_tickets = pd.DataFrame()
-        df_items = pd.DataFrame()
-
-        for ticket in tickets:
             ticket_dict = ticket['ticket']['document']['receipt']
             df_ticket = pd.DataFrame([{
-                'Дата': datetime.strptime(ticket_dict['dateTime'], "%Y-%m-%dT%H:%M:%S").strftime("%d.%m.%Y %H:%M"),
+                'Дата': datetime.utcfromtimestamp(ticket_dict['dateTime']).strftime("%d.%m.%Y %H:%M"),
                 'Сумма': ticket_dict['totalSum'] / 100,
                 'Продавец': ticket_dict['user'],
                 'Адрес': ticket_dict['retailPlaceAddress'] if 'retailPlaceAddress' in ticket_dict else '',
@@ -177,6 +342,7 @@ async def LinkHandler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 'Цена': item['price'] / 100,
                 'Количество': item['quantity'],
                 'Сумма': item['sum'] / 100,
+                'Включить в общий счёт': 'Да'
             } for item in ticket_dict['items']])
 
             fullSum += df_ticket.iloc[0]['Сумма']
@@ -184,14 +350,60 @@ async def LinkHandler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             
             df_tickets = pd.concat([df_tickets, df_ticket], ignore_index=True)
             df_items = pd.concat([df_items, df_items_in_ticket], ignore_index=True)
+        
+        except Exception:
+            Log.infor(
+                f"Got an error while getting ticket data for",
+                f"{update.effective_user.id} aka {update.effective_user.name}",
+                f"in {chat_id} aka {update.effective_chat.title}",
+            )
 
-        df_head = pd.DataFrame([{
-            'Общая сумма': fullSum,
-            'Общий НДС':   fullNds,
-        }])
+            await update.message.reply_photo(file.file_id, caption=TextTicketError, parse_mode=ParseMode.MARKDOWN)
+            Log.debug(traceback.format_exc())
+            continue
 
+    df_head = pd.DataFrame([{
+        'Общая сумма': fullSum,
+        'Общий НДС':   fullNds,
+    }])
+
+    Log.infor(
+        f"Starting converting tickets to spreadsheet for",
+        f"{update.effective_user.id} aka {update.effective_user.name}",
+        f"in {chat_id} aka {update.effective_chat.title}",
+    )
+    await update.message.reply_markdown(TextConvertingToSpreadsheet)
+    
+    try:
+        Gspread = gspread.service_account_from_dict(SheetsAccJson)
+        sheet = Gspread.open_by_url(State.loc[State.id == chat_id].iloc[0].link)
+    except Exception:
+        Log.infor(
+            f"Got an exeption while connecting to google for",
+            f"{update.effective_user.id} aka {update.effective_user.name}",
+            f"in {chat_id} aka {update.effective_chat.title}",
+        )
+        await update.message.reply_markdown(TextSheetError)
+        State.loc[State.id == chat_id, 'link'] = ""
+        Log.exception(traceback.format_exc())
+        return
+    
+    try:
+        title = TitleBase.format(date = datetime.now().strftime("%d.%m.%Y %H:%M"))
+        worksheet = sheet.add_worksheet(title=title, rows=100, cols=20)
+    except Exception:
+        Log.infor(
+            f"Got an exeption while creating worksheet with title {title} for",
+            f"{update.effective_user.id} aka {update.effective_user.name}",
+            f"in {chat_id} aka {update.effective_chat.title}",
+        )
+        await update.message.reply_markdown(TextWorksheetError.format(title=title))
+        State.loc[State.id == chat_id, 'link'] = ""
+        Log.exception(traceback.format_exc())
+        return
+
+    try:
         next_avaliable_row = lambda: len( list( filter(None, worksheet.col_values(1)) ) ) + 1
-
         set_with_dataframe(worksheet, df_head,  row = 1, col = 1, include_index = False)
 
         row_tickets = 1 + next_avaliable_row()
@@ -200,23 +412,50 @@ async def LinkHandler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         row_items = 1 + next_avaliable_row() + 1
         set_with_dataframe(worksheet, df_items, row = row_items, col = 1, include_index = False)
 
+        row_formula = 1 + next_avaliable_row() + 1
+
+        a1_formula   = row_formula + 1
+        ai_itmes_str = row_items   + 1
+        ai_itmes_end = row_items   + df_items.shape[0]
+        worksheet.update(
+            f"C{a1_formula}:D{a1_formula}", [[
+                "Общий счёт",
+                f"=СУММЕСЛИ(E{ai_itmes_str}:E{ai_itmes_end};\"=Да\";D{ai_itmes_str}:D{ai_itmes_end})"
+            ]],
+            raw = False
+        )
+
+        a1_tickets_str = row_tickets + 1
+        a1_tickets_end = row_tickets + df_items.shape[0]
+
+        fmt = CellFormat(horizontalAlignment='CENTER',textFormat=TextFormat(bold=True))
+        format_cell_ranges(worksheet, [
+            (f"A1:B1", fmt),
+            (f"A{row_tickets}:E{row_tickets}", fmt),
+            (f"A{row_items}:E{row_items}", fmt),
+            (f"C{a1_formula}:C{a1_formula}", fmt),
+            (f"A{a1_tickets_str}:E{a1_tickets_end}", CellFormat(wrapStrategy='WRAP')),
+        ])
+        set_column_width(worksheet, 'A', 450)
+        set_column_width(worksheet, 'C', 200)
+        set_column_width(worksheet, 'D', 200)
+        set_column_width(worksheet, 'E', 200)
     except Exception:
-        Log.info(f"Got an exeption while parsing json file but created and droped worksheet {title} and droped state" +\
-            "from {update.effective_user.id} aka {update.effective_user.name} " +\
-            f"in {update.effective_chat.id} aka {update.effective_chat.title}")
+        Log.infor(
+            f"Got an exeption while adding content for worksheet {title} and droped state for",
+            f"{update.effective_user.id} aka {update.effective_user.name}",
+            f"in {chat_id} aka {update.effective_chat.title}",
+        )
         Log.exception(traceback.format_exc())
         sheet.del_worksheet(worksheet)
         State = State.drop(State[State.id == update.effective_chat.id].index)
-        await update.message.reply_markdown(ParceError.format(title = title))
+        await update.message.reply_markdown(TextContentError.format(title=title))
         return
-
+    
+    Log.infor(
+        f"Done parsing json file and created worksheet {title} for",
+        f"in {update.effective_user.id} aka {update.effective_user.name}",
+        f"in {update.effective_chat.id} aka {update.effective_chat.title}"
+    )
     State = State.drop(State[State.id == update.effective_chat.id].index)
-    Log.info(f"Done parsing json file and created worksheet {title} " +\
-        "in {update.effective_user.id} aka {update.effective_user.name} " +\
-        f"in {update.effective_chat.id} aka {update.effective_chat.title}")
-    await update.message.reply_markdown(TextDone.format(title = title))
-
-async def NotLinkHandler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    Log.info(f"Got bad link from {update.effective_user.id} aka {update.effective_user.name} " +\
-        f"in {update.effective_chat.id} aka {update.effective_chat.title}")
-    await update.message.reply_markdown(TextLinkError)
+    await update.message.reply_markdown(TextDone.format(title=title))

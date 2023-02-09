@@ -12,3 +12,5 @@ if SheetsAccJson == '' or SheetsAccJson == None:
         SheetsAccJson = json.load(fp)
 else:
     SheetsAccJson = json.loads(SheetsAccJson)
+
+SleepSec = int(environ.get('SLEEP_SEC'))
