@@ -5,3 +5,4 @@ env.secret
 hosts.ini
 secrets.yaml
 img
+.env

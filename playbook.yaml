@@ -1,8 +1,11 @@
-- hosts: all
-  tags:
-    - run_docker
-  vars_files:
-    - secrets.yaml
+---
+- name: Get secrets from vault
+  hosts: all
+  gather_facts: false
+  roles:
+    - role: bmstu.vats.init
+      vault_path_inventory: bots/data/deploy,inventory-secrets.yaml
+      vault_path_secrets:   bots/data/ru-cheque-google-spread-sheets-bot,secrets.yaml
   tasks:
     - name: Init a new swarm with default parameters
       community.docker.docker_swarm:
@@ -11,8 +14,8 @@
     - name: Run bot docker service
       docker_swarm_service:
         name: ru-cheque-google-spread-sheets-bot
-        image: twobrowin/ru-cheque-google-spread-sheets-bot:2.0.1
+        image: twobrowin/ru-cheque-google-spread-sheets-bot:2.2.2
         env:
           TZ: "Europe/Moscow"
-          BOT_TOKEN: "{{ bot_token }}"
-          SHEETS_ACC_JSON: "{{ sheet_acc_json | string }}"
+          BOT_TOKEN: "{{ secrets.bot_token }}"
+          SHEETS_ACC_JSON: "{{ secrets.sheet_acc | string }}"

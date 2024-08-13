@@ -5,25 +5,22 @@ from telegram.ext import (
     ContextTypes,
     CommandHandler,
     MessageHandler,
+    ConversationHandler
 )
 from telegram.ext.filters import (
     Entity,
     PHOTO,
-    ALL
+    ALL,
+    TEXT
 )
 from telegram.constants import MessageEntityType
+from loguru import logger
 
 from settings import BotToken
-from log import Log
-
 from text import TitleBase, HelpText
 
-
-from flow import (
-    UserHasToPrintPhoneFilter,
-    UserHasToPrintCodeFilter
-)
-from flow import (
+from enums import ConversationEnum
+from conversation import (
     CancelHandler,
     FlowHandler,
     ProceedHandler,
@@ -34,7 +31,7 @@ from flow import (
 )
 
 async def StartHelpHandler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    Log.infor(
+    logger.info(
         f"Got start or help command from {update.effective_user.id} aka {update.effective_user.name}"
         f"in {update.effective_chat.id} aka {update.effective_chat.title}"
     )
@@ -54,20 +51,42 @@ async def post_init(app: Application) -> None:
     ])
 
 if __name__ == '__main__':
-    Log.info("Starting...")
+    logger.info("Starting...")
     app = ApplicationBuilder().token(BotToken).post_init(post_init).build()
 
-    app.add_handler(CommandHandler("start", StartHelpHandler))
-    app.add_handler(CommandHandler("help",  StartHelpHandler))
+    app.add_handlers([
+        CommandHandler("start", StartHelpHandler),
+        CommandHandler("help",  StartHelpHandler),
+        CommandHandler("cancel", CancelHandler)
+    ])
 
-    app.add_handler(CommandHandler("cancel",  CancelHandler))
-    app.add_handler(CommandHandler("proceed", ProceedHandler))
-    app.add_handler(CommandHandler("phone",   SetPhoneCommandHandler))
-
-    app.add_handler(MessageHandler(Entity(MessageEntityType.URL) | PHOTO, FlowHandler))
-    app.add_handler(MessageHandler(UserHasToPrintPhoneFilter, PhoneHandler))
-    app.add_handler(MessageHandler(UserHasToPrintCodeFilter,  CodeHandler))
-    app.add_handler(MessageHandler(ALL, MissHandler))
+    app.add_handler(ConversationHandler(
+        entry_points = [
+            MessageHandler(Entity(MessageEntityType.URL) | PHOTO, FlowHandler),
+            CommandHandler("proceed", ProceedHandler),
+            CommandHandler("phone", SetPhoneCommandHandler),
+        ],
+        states = {
+            ConversationEnum.AWAIT_LINK_PHOTO: [
+                MessageHandler(Entity(MessageEntityType.URL) | PHOTO, FlowHandler),
+                CommandHandler("proceed", ProceedHandler),
+                CommandHandler("phone", SetPhoneCommandHandler),
+            ],
+            ConversationEnum.AWAIT_PHONE: [
+                CommandHandler("phone", SetPhoneCommandHandler),
+                MessageHandler(PHOTO, FlowHandler),
+                MessageHandler(TEXT,  PhoneHandler),
+            ],
+            ConversationEnum.AWAIT_CODE: [
+                CommandHandler("phone", SetPhoneCommandHandler),
+                MessageHandler(TEXT, CodeHandler)
+            ]
+        },
+        fallbacks = [
+            CommandHandler("cancel", CancelHandler),
+            MessageHandler(ALL, MissHandler)
+        ]
+    ))
 
     app.run_polling()
-    Log.info("Exit. Goodby!")
+    logger.info("Exit. Goodby!")

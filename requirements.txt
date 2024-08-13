@@ -5,3 +5,5 @@ gspread-dataframe
 gspread-formatting
 pyzbar
 Pillow
+python-dotenv
+loguru
