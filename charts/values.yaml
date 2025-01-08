@@ -1,0 +1,17 @@
+container:
+  image: twobrowin/ru-cheque-google-spread-sheets-bot:2.2.2
+  imagePullPolicy: IfNotPresent
+
+  env:
+  - name: TZ
+    value: Europe/Moscow
+  - name: BOT_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: ru-cheque-google-spread-sheets-bot
+        key: bot_token
+  - name: SHEETS_ACC_JSON
+    valueFrom:
+      secretKeyRef:
+        name: ru-cheque-google-spread-sheets-bot
+        key: sheet_acc_json

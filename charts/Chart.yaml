@@ -1,0 +1,4 @@
+apiVersion: v2
+name: ru-cheque-google-spread-sheets-bot
+version: 1.0.0
+appVersion: 0.0.0
